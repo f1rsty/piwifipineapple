@@ -76,10 +76,17 @@ change_mac()
 setup_apache2()
 {
 	# Directory to store the SSL Certificates / Key
-        mkdir /etc/apache2/ssl;
-        openssl req -x509 -nodes -days 1095 -newkey rsa:2048 -out /etc/apache2/ssl/server.crt -keyout /etc/apache2/ssl/server.key -subj "/C=/ST=/L=/O=/OU=/CN=*"
+        openssl req -x509 -nodes -days 1095 -newkey rsa:2048 -out /etc/ssl/certs/ssl-cert-snakeoil.pem -keyout /etc/ssl/private/ssl-cert-snakeoil.key -subj "/C=/ST=/L=/O=/OU=/CN=*"
         a2enmod ssl
         ln -s /etc/apache2/sites-available/default-ssl.conf /etc/apache2/sites-enabled/000-default-ssl.conf
+}
+
+create_landing_page()
+{
+        chmod 777 /var/www/html
+        rm /var/www/html/index.html
+        mv ./submit.php /var/www/html/submit.php
+        mv ./index.php /var/www/html/index.php
 }
 
 begin_installation()
@@ -93,6 +100,8 @@ begin_installation()
 		change_dhcpcd_conf >> /dev/null 2>&1
 		update_rcd >> /dev/null 2>&1
 		change_mac >> /dev/null 2>&1
+		setup_apache2 >> /dev/null 2>&1
+		create_landing_page >> /dev/null 2>&1
 		id="0"
 		while (true)
 		do
@@ -107,18 +116,10 @@ begin_installation()
 	} | whiptail --title "Installing" --gauge "Installing the application" 8 60 0
 }
 
-edit_apache2_conf()
+ask_reboot()
 {
- 	sed -i 's/^\(SSLCertificateFile\t\).*$/\1\/etc\/apache2\/ssl\/server.crt/' /etc/apache2/sites-enabled/000-default-ssl.conf
+	whiptail --title "Installation Finished" --yesno "You need to reboot the Pi to complete installation. Reboot now?" 12 60
 }
-
-# create_landing_page()
-# {
-# 	chmod 777 /var/www/html
-# 	rm /var/www/html/index.html
-# 	mv ./submit.php /var/www/html/submit.php
-# 	mv ./index.php /var/www/html/index.php
-# }
 
 # # TODO: Update IPTables to forward all requests back to 10.0.0.1 (Or maybe we can add a new hostname to our PI and redirect to its hostname so people think they cannot login
 # update_iptables()
@@ -137,6 +138,12 @@ welcome_message
 
 if (preinstall_message -eq 0); then
 	begin_installation
+else
+	exit 1
+fi
+
+if (ask_reboot -eq 0); then
+	reboot now
 else
 	exit 1
 fi
