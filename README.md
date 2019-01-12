@@ -12,9 +12,7 @@ All that is required is a raspberry pi running raspbian stretch, the installer h
 
 ### Installing
 
-git clone https://github.com/f1rsty/piwifipineapple.git
-cd piwifipineapple
-sudo bash piwifipineapple.sh
+git clone https://github.com/f1rsty/piwifipineapple.git\ncd piwifipineapple\nsudo bash piwifipineapple.sh
 
 ## Deployment
 
