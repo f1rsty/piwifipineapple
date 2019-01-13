@@ -20,7 +20,7 @@ preinstall_message()
 
 get_dependants()
 {
-	apt-get install dnsmasq hostapd php7.0
+	apt-get install dnsmasq hostapd lighttpd -y
 }
 
 make_hostapd_conf()
