@@ -1,149 +1,216 @@
-#!/bin/sh
+#!/bin/bash
 
-# This program was written by Jason Sholler
+# Find the rows and columns. Will default to 80x24 if it can not be detected.
+screen_size=$(stty size 2>/dev/null || echo 24 80)
+rows=$(echo $screen_size | awk '{print $1}')
+columns=$(echo $screen_size | awk '{print $2}')
 
-# Please use responsibly, I am not liable for any damages caused
+# Divide by two so the dialogs take up half of the screen, which looks nice.
+r=$(( rows / 2 ))
+c=$(( columns / 2 ))
+# Unless the screen is tiny
+r=$(( r < 20 ? 20 : r ))
+c=$(( c < 70 ? 70 : c ))
 
-# Functions that define the core of the program
+# Run SUDO commands
+export SUDO="sudo"
 
-welcome_message()
+# Dependant applications
+PKG_MANAGER="apt-get"
+PKG_CACHE="/var/lib/apt/lists/"
+UPDATE_PKG_CACHE="${PKG_MANAGER} update"
+PKG_INSTALL="${PKG_MANAGER} --yes --no-install-recommends install"
+PKG_COUNT="${PKG_MANAGER} -s -o Debug::NoLocking=true upgrade | grep -c ^Inst || true"
+DEP_APPS=( dnsmasq hostapd php7.0 apache2 )
+
+# Variables for storing messages so we can later count length if necessary
+CHECK_ROOT="Sorry you are not root. Please type: sudo bash piwifipineapple.sh"
+WELCOME_MESSAGE="Welcome! This is an automated installer for setting up the Pi as a rogue access point. Please see https://github.com/f1rsty/piwifipineapple for full documentation"
+INSTALL_MESSAGE="This is the final prompt before installation begins. Are you sure you would like to continue?"
+REBOOT_MESSAGE="It looks like the installation has completed successfully. In order for you to use the PI as an access point you must reboot. Would you like to reboot now?"
+FAIL_MESSAGE="It looks like the installation did not complete successfully. Please check the error messages."
+
+print_intro()
 {
-	# Welcome the user with a whiptail box
-	whiptail --title "Pi Wifi Pineapple" --msgbox "This script automatically sets up the Raspberry Pi to be an evil hotspot.\\n\nThis means people can connect to it and you can see them connecting." 12 60
+        whiptail --title "Pi Wifi Pineapple" --msgbox "$WELCOME_MESSAGE" ${r} ${c}
+        whiptail --title "Begin Installer" --yesno "$INSTALL_MESSAGE" ${r} ${c}
 }
 
-preinstall_message()
+get_ssid()
 {
-	# Final installation message before installing
-	whiptail --yesno "This is the last prompt before installation begins. Continue?" 10 30
+	SSID="$1"
+	while [ -z "$SSID" ]; do
+		SSID=$(whiptail --title "SSID" --backtitle "Configure Fake SSID" --inputbox "Please enter SSID" ${r} ${c} 3>&1 1>&2 2>&3)
+		if [ $? -ne 0 ]; then
+			return 0
+		elif [ -z "$SSID" ]; then
+			whiptail --title "Invalid SSID" --backtitle "Invalid SSID Entered" --msgbox "SSID cannot be empty. Please try again." ${r} ${c}
+		fi
+	done
+	printf "interface=wlan0\nssid=$SSID\nchannel=1" > /etc/hostapd/hostapd.conf
 }
 
-get_dependants()
+# TODO: Needs work
+change_pi_password()
 {
-	apt-get install dnsmasq hostapd lighttpd -y
+	PASS="$1"
+	while [ -z "PASS" ]; do
+		PASS=$(whiptail --passwordbox "Please enter a password for the pi user" 20 60 3>&1 1>&2 2>&3)
+		if [ $? -ne 0]; then
+			echo 'pi:$PASS' | chpasswd
+			return 0
+		elif [ -z "$PASS" ]; then
+			whiptail --msgbox "Password cannot be empty. Please try again." 20 50
+		fi
+	done
 }
 
-make_hostapd_conf()
+choose_user()
 {
-        # Create the hostapd.conf file - This sets the wifi interface to broadcast an SSID
-        printf "interface=wlan0\nssid=Free Wifi\nchannel=1" > /etc/hostapd/hostapd.conf
+	whiptail --msgbox --backtitle "Parsing Users" -- title "Local Users" "Choose a local user" ${r} ${c}
+	NUMUSERS=$(awk -F':' 'BEGIN {count=0} $3>=500 && $3<=60000 { count++ } END{ print count }' /etc/passwd)
+	if [ "$NUMUSERS" -eq 0 ]
+	then
+		if ADDUSER=$(whiptail --title "Add A User" --inputbox "No non-root user account was found. Please type a new username." ${r} ${c} 3>&1 1>&2 2>&3)
+		then
+			PASSWORD=$(whiptail  --title "password dialog" --passwordbox "Please enter the new user password" ${r} ${c} 3>&1 1>&2 2>&3)
+			CRYPT=$(perl -e 'printf("%s\n", crypt($ARGV[0], "password"))' "${PASSWORD}")
+			useradd -m -p "${CRYPT}" -s /bin/bash "${ADDUSER}"
+			if [[ $? = 0 ]]; then
+				whiptail --title "Success" --msgbox "User successfully added" ${r} ${c}
+				((NUMUSERS+=1))
+			else
+				exit 1
+			fi
+		else
+			exit 1
+		fi
+	fi
+	AVAILABLEUSERS=$(awk -F':' '$3>=500 && $3<=60000 {print $1}' /etc/passwd)
+	local USERARRAY=()
+	local FIRSTLOOP=1
+	while read -r line
+	do
+		mode="OFF"
+		if [[ $FIRSTLOOP -eq 1 ]]; then
+			FIRSTLOOP=0
+			mode="ON"
+		fi
+		USERARRAY+=("${line}" "" "${mode}")
+	done <<< "${AVAILABLEUSERS}"
 }
 
-change_initd_hostapd()
+update()
 {
-        # This points the init.d/hostapd to use the newly created configuration in make_hostapd_conf()
-        sed -i 's/^\(DAEMON\_CONF=\).*$/\1\/etc\/hostapd\/hostapd\.conf/' /etc/init.d/hostapd
+	{
+	COUNTER=1
+	while read -r line; do
+        	COUNTER=$(( $COUNTER + 1 ))
+        	echo $COUNTER
+	done < <(apt-get update -y && apt-get upgrade -y)
+	} | whiptail --title "Progress" --gauge "Please wait while updating repos" 6 ${c} 0
 }
 
-change_hostapd_daemon()
+update_package_cache()
 {
-        # Edit the /etc/default/hostapd file with line 'DAEMON_OPTS="-t -d -K -f /var/log/hostapd.log"
-        # First make a back up of the file
-        # -t = Time, -d = Debug, -K = Key Data, -f = File
-        mv /etc/default/hostapd /etc/default/hostapd.bak
-        printf 'DAEMON_OPTS="-t -d -K -f /var/log/hostapd.log"' >> /etc/default/hostapd
+	timestamp=$(stat -c %Y ${PKG_CACHE})
+	timestampAsDate=$(date -d @"${timestamp}" "+%b %e")
+	today=$(date "+%b %e")
+
+	if [ ! "${today}" == "${timestampAsDate}" ]; then
+		update
+	fi
 }
 
-change_dnsmasq_conf()
+package_check_install()
 {
-        # Move the file for backup
-        mv /etc/dnsmasq.conf /etc/dnsmasq.conf.bak
-        # Create the new configuration file for dnsmasq
-        printf "address=/#/10.0.0.1\ninterface=wlan0\ndhcp-range=wlan0,10.0.0.2,10.0.0.254,12h" > /etc/dnsmasq.conf
+	dpkg-query -W -f='${Status}' "${1}" 2>/dev/null | grep -c "ok installed" || ${PKG_INSTALL} "${1}"
 }
 
-change_dhcpcd_conf()
+notify_package_updates_available()
 {
-        # Edit /etc/dhcpcd.conf to set a static IP Address on wlan0
-        printf "interface wlan0\nstatic ip_address=10.0.0.1/24\nstatic domain_name_servers=10.0.0.1" >> /etc/dhcpcd.conf
+	updatesToInstall=$(eval "${PKG_COUNT}")
+	if [[ ${updatesToInstall} -eq "0" ]]; then
+		return 0;
+	else
+		update
+  	fi
 }
 
-update_rcd()
+install_dependent_packages()
 {
-        update-rc.d apache2 defaults
-        update-rc.d hostapd defaults
-        update-rc.d dnsmasq defaults
+	declare -a argArray1=("${!1}")
+
+	if command -v debconf-apt-progress &> /dev/null; then
+		$SUDO debconf-apt-progress -- ${PKG_INSTALL} "${argArray1[@]}"
+	else
+		for i in "${argArray1[@]}"; do
+		echo -n ":::    Checking for $i..."
+		$SUDO package_check_install "${i}" &> /dev/null
+		echo " installed!"
+		done
+	fi
 }
 
-change_mac()
+enable_startup()
 {
-        # The default MAC of a Pi clearly indicates that it is a Raspberry Pi
-        # Here we add a small command to .bashrc to always have this weird random MAC
-        # Address on boot, if you look it up it doesn't say it is anything
-        echo "sudo ifconfig wlan0 hw ether 02:ab:cd:ef:12:30" >> /home/pi/.bashrc;
+	update-rc.d lighttpd defaults
+	update-rc.d hostapd defaults
+	update-rc.d dnsmasq defaults
+}
+
+generate_confs()
+{
+	get_ssid
+	sed -i 's/^\(DAEMON\_CONF=\).*$/\1\/etc\/hostapd\/hostapd\.conf/' /etc/init.d/hostapd
+	mv /etc/default/hostapd /etc/default/hostapd.bak
+	printf 'DAEMON_OPTS="-t -d -K -f /var/log/hostapd.log"' > /etc/default/hostapd
+	printf "address=/#/172.16.1.1\ninterface=wlan0\ndhcp-range=wlan0,172.16.1.2,172.16.1.254,12h" > /etc/dnsmasq.conf
+        printf "interface wlan0\nstatic ip_address=172.16.1.1/24\nstatic domain_name_servers=127.0.0.1" >> /etc/dhcpcd.conf
+	echo "sudo ifconfig wlan0 hw ether 02:ab:cd:ef:12:30" >> /home/pi/.bashrc;
 }
 
 setup_apache2()
 {
 	# Directory to store the SSL Certificates / Key
-        openssl req -x509 -nodes -days 1095 -newkey rsa:2048 -out /etc/ssl/certs/ssl-cert-snakeoil.pem -keyout /etc/ssl/private/ssl-cert-snakeoil.key -subj "/C=/ST=/L=/O=/OU=/CN=*"
+	mkdir /etc/apache2/ssl/key
+	mkdir /etc/apache2/ssl/cert
+	chmod 777 /var/www/html
+	rm /var/www/html/index.html
+        openssl req -x509 -nodes -days 1095 -newkey rsa:2048 -out /etc/apache2/ssl/cert/cert.pem -keyout /etc/apache2/ssl/key/cert.key -subj "/C=/ST=/L=/O=/OU=/CN=*"
         a2enmod ssl
-        ln -s /etc/apache2/sites-available/default-ssl.conf /etc/apache2/sites-enabled/000-default-ssl.conf
-}
-
-create_landing_page()
-{
-        chmod 777 /var/www/html
-        rm /var/www/html/index.html
-        mv ./submit.php /var/www/html/submit.php
+	ln -s /etc/apache2/sites-available/default-ssl.conf /etc/apache2/sites-enabled/000-default-ssl.conf
+	mv ./submit.php /var/www/html/submit.php
         mv ./index.php /var/www/html/index.php
+        mv ./000-default-ssl.conf /etc/apache2/sites-available/000-default-ssl.conf
 }
 
-begin_installation()
+reboot_screen()
 {
-	{
-		get_dependants >> /dev/null 2>&1
-		make_hostapd_conf >> /dev/null 2>&1
-		change_initd_hostapd >> /dev/null 2>&1
-		change_hostapd_daemon >> /dev/null 2>&1
-		change_dnsmasq_conf >> /dev/null 2>&1
-		change_dhcpcd_conf >> /dev/null 2>&1
-		update_rcd >> /dev/null 2>&1
-		change_mac >> /dev/null 2>&1
-		setup_apache2 >> /dev/null 2>&1
-		create_landing_page >> /dev/null 2>&1
-		id="0"
-		while (true)
-		do
-			proc=$(ps aux | grep -v grep | grep -e "piwifi")
-			if [[ "$proc" == "" ]]; then break; fi
-		sleep 1
-		echo $i
-		i=$(expr $i + 1)
-		done
-		echo 100
-		sleep 1
-	} | whiptail --title "Installing" --gauge "Installing the application" 8 60 0
+	if (success -eq 0); then
+		whiptail --title "Successful Installation" --yesno "$REBOOT_MESSAGE" ${r} ${c}
+	else
+		whoptail --title "Failed Installation" --msg "$FAIL_MESSAGE" ${r} ${c}
+	fi
 }
 
-ask_reboot()
-{
-	whiptail --title "Installation Finished" --yesno "You need to reboot the Pi to complete installation. Reboot now?" 12 60
-}
-
-# # TODO: Update IPTables to forward all requests back to 10.0.0.1 (Or maybe we can add a new hostname to our PI and redirect to its hostname so people think they cannot login
-# update_iptables()
-# {
-# }
-
-# Start of the main script
+# Main Script
 
 # Check if root
 if [ "$(whoami)" != "root" ]; then
-        whiptail --msgbox "Sorry you are not root. You must type: sudo bash piwifipineapple.sh" 10 40 1
-        exit 1
+        whiptail --msgbox "$CHECK_ROOT" 10 ${#CHECK_ROOT}
+	clear;
+        exit;
 fi
 
-welcome_message
-
-if (preinstall_message -eq 0); then
-	begin_installation
-else
-	exit 1
-fi
-
-if (ask_reboot -eq 0); then
-	reboot now
+# Print intro, proceed with installation
+if (print_intro -eq 0); then
+	update_package_cache
+	notify_package_updates_available
+	install_dependent_packages DEP_APPS[@]
+	enable_startup
+	generate_confs
+	setup_apache2
 else
 	exit 1
 fi
