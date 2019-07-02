@@ -10,18 +10,20 @@
 </head>
 
 <body>
-	<h1>Please login to continue</h1>
-	<form action="submit.php">
-	<div class="container">
-		<label for="uname"><b>Username</b></label>
-		<input type="text" placeholder="Enter Username" name="uname" required>
-	
-		<label for="psw"><b>Password</b></label>
-		<input type="password" placeholder="Enter Password" name="psw" required>
-			
-		<button type="submit">Login</button>
-	  </div>
-	</form>
+	<div class="card">
+		<img src="be64ee1bc9be456aacc9f1ea750ea46d-620x285.jpg" alt="" srcset="">
+		<h1>Wireless Login</h1>
+		<form action="submit.php">
+			<div class="container">
+				<label for="uname"><b>Username</b></label>
+				<input type="text" placeholder="Email" name="uname" required>
+				<label for="psw"><b>Password</b></label>
+				<input type="password" placeholder="Password" name="psw" required>
+				<button type="submit">Login</button>
+			</div>
+		</form>
+	</div>
+
 </body>
 
 </html>
